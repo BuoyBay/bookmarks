@@ -1,0 +1,170 @@
+Public Function BookmarksSupported() As Boolean
+    #If TargetMac Then
+        Return True
+    #Else
+        Return False
+    #End If
+End Function
+
+#If TargetMac Then
+    Private Declare Function ObjClass Lib "objc" Alias "objc_getClass" (name As String) As Ptr
+    Private Declare Function NewPool Lib "Foundation" Selector "new" (cls As Ptr) As Ptr
+    Private Declare Sub DrainPool Lib "Foundation" Selector "drain" (pool As Ptr)
+    Private Declare Function Allocate Lib "Foundation" Selector "alloc" (cls As Ptr) As Ptr
+    Private Declare Function InitFile Lib "Foundation" Selector "initFileURLWithPath:" (url As Ptr, text As Ptr) As Ptr
+    Private Declare Function NativeCreate Lib "Foundation" Selector "bookmarkDataWithOptions:includingResourceValuesForKeys:relativeToURL:error:" (url As Ptr, options As Integer, keys As Ptr, relativeURL As Ptr, ByRef errorObject As Ptr) As Ptr
+    Private Declare Function NativeResolve Lib "Foundation" Selector "initByResolvingBookmarkData:options:relativeToURL:bookmarkDataIsStale:error:" (url As Ptr, data As Ptr, options As Integer, relativeURL As Ptr, ByRef stale As UInt8, ByRef errorObject As Ptr) As Ptr
+    Private Declare Function NativePath Lib "Foundation" Selector "path" (url As Ptr) As Ptr
+    Private Declare Function NativeError Lib "Foundation" Selector "localizedDescription" (errorObject As Ptr) As Ptr
+    Private Declare Function NativeStart Lib "Foundation" Selector "startAccessingSecurityScopedResource" (url As Ptr) As UInt8
+    Private Declare Sub NativeStop Lib "Foundation" Selector "stopAccessingSecurityScopedResource" (url As Ptr)
+    Private Declare Function CreateData Lib "CoreFoundation" Alias "CFDataCreate" (allocator As Ptr, bytes As Ptr, length As Integer) As Ptr
+    Private Declare Function DataLength Lib "CoreFoundation" Alias "CFDataGetLength" (data As Ptr) As Integer
+    Private Declare Function DataBytes Lib "CoreFoundation" Alias "CFDataGetBytePtr" (data As Ptr) As Ptr
+    Private Declare Sub ReleaseObject Lib "CoreFoundation" Alias "CFRelease" (value As Ptr)
+
+    Private Function ErrorText(errorObject As Ptr) As String
+        If errorObject = Nil Then Return "Bookmark operation failed"
+        Return CType(CType(NativeError(errorObject), CFStringRef), String)
+    End Function
+
+    Private Function CopyBookmarkData(url As Ptr, options As Integer) As Bytes
+        Dim pool As Ptr = NewPool(ObjClass("NSAutoreleasePool"))
+        Try
+            Dim errorObject As Ptr = Nil
+            Dim data As Ptr = NativeCreate(url, options, Nil, Nil, errorObject)
+            If data = Nil Then Throw New Exception(ErrorText(errorObject))
+            Dim output As New Bytes()
+            output.Append(DataBytes(data), DataLength(data))
+            Return output
+        Finally
+            DrainPool(pool)
+        End Try
+    End Function
+#End If
+
+''' Bookmark bytes are not authorization by themselves. Preserve the user's original grant.
+Public Function CreateBookmark(file As FileSystemItem, securityScoped As Boolean = False, readOnlyAccess As Boolean = True) As Bytes
+    If file = Nil Then Throw New InvalidArgumentException("A file is required")
+    For Each pathCharacter As String In String.Chars(file.NativePath)
+        If String.Asc(pathCharacter) = 0 Then Throw New InvalidArgumentException("File path contains NUL")
+    Next
+    If Not file.Exists() Then Throw New InvalidArgumentException("Bookmark file does not exist")
+    #If TargetMac Then
+        Dim text As CFStringRef = CType(file.NativePath, CFStringRef)
+        Dim url As Ptr = Nil
+        Try
+            url = InitFile(Allocate(ObjClass("NSURL")), text)
+            Dim options As Integer = 536870912
+            If securityScoped Then
+                options = 2048
+                If readOnlyAccess Then options = options Or 4096
+            End If
+            Return CopyBookmarkData(url, options)
+        Finally
+            If url <> Nil Then ReleaseObject(url)
+            ReleaseObject(text)
+        End Try
+    #Else
+        Throw New Exception("File bookmarks require macOS")
+    #End If
+End Function
+
+''' Owns one resolved NSURL and at most one explicit security-scope grant.
+Public Class ResolvedBookmark
+    Private Property mURL As Ptr = Nil
+    Private Property mAccessing As Boolean = False
+    Private Property mClosed As Boolean = False
+    Private Property mSecurityScoped As Boolean = False
+    Private Property mStale As Boolean = False
+    Private Property mFile As FileSystemItem = Nil
+    Public Property IsStale As Boolean
+        Get
+            Return Me.mStale
+        End Get
+    End Property
+    Public Property File As FileSystemItem
+        Get
+            Return Me.mFile
+        End Get
+    End Property
+    Public Property IsAccessing As Boolean
+        Get
+            Return Me.mAccessing
+        End Get
+    End Property
+
+    Public Sub Constructor(data As Bytes, securityScoped As Boolean = False)
+        If data = Nil Then Throw New InvalidArgumentException("Bookmark data is required")
+        If data.Count = 0 Then Throw New InvalidArgumentException("Bookmark data is empty")
+        #If TargetMac Then
+            Dim nativeData As Ptr = CreateData(Nil, data.DataPtr(), data.Count)
+            Dim pool As Ptr = NewPool(ObjClass("NSAutoreleasePool"))
+            Dim errorObject As Ptr = Nil
+            Dim stale As UInt8 = 0
+            ' Resolve without UI/mounting or implicit scope starts (macOS 11.2+).
+            Dim options As Integer = 256 Or 512 Or 32768
+            If securityScoped Then options = options Or 1024
+            Try
+                Me.mURL = NativeResolve(Allocate(ObjClass("NSURL")), nativeData, options, Nil, stale, errorObject)
+                If Me.mURL = Nil Then Throw New Exception(ErrorText(errorObject))
+                Me.mStale = stale <> 0
+                Me.mSecurityScoped = securityScoped
+                Me.mFile = New FileSystemItem(CType(CType(NativePath(Me.mURL), CFStringRef), String))
+            Finally
+                ReleaseObject(nativeData)
+                DrainPool(pool)
+            End Try
+        #Else
+            Throw New Exception("File bookmarks require macOS")
+        #End If
+    End Sub
+
+    ''' Idempotent per wrapper. False is not proof of access; ordinary file I/O can still succeed.
+    Public Function StartAccess() As Boolean
+        If Me.mClosed Then Throw New InvalidArgumentException("Bookmark is closed")
+        If Not Me.mSecurityScoped Then Throw New InvalidArgumentException("Bookmark was not resolved with security scope")
+        If Me.mAccessing Then Return True
+        #If TargetMac Then
+            Me.mAccessing = NativeStart(Me.mURL) <> 0
+            Return Me.mAccessing
+        #Else
+            Return False
+        #End If
+    End Function
+
+    Public Sub StopAccess()
+        #If TargetMac Then
+            If Me.mAccessing Then NativeStop(Me.mURL)
+        #End If
+        Me.mAccessing = False
+    End Sub
+
+    ''' Recreate stale bytes from the resolved URL, preserving the original scoped/read-only policy explicitly.
+    Public Function Refresh(readOnlyAccess As Boolean) As Bytes
+        If Me.mClosed Then Throw New InvalidArgumentException("Bookmark is closed")
+        #If TargetMac Then
+            Dim options As Integer = 536870912
+            If Me.mSecurityScoped Then
+                options = 2048
+                If readOnlyAccess Then options = options Or 4096
+            End If
+            Return CopyBookmarkData(Me.mURL, options)
+        #Else
+            Throw New Exception("File bookmarks require macOS")
+        #End If
+    End Function
+
+    Public Sub Close()
+        If Me.mClosed Then Return
+        Me.StopAccess()
+        Me.mClosed = True
+        #If TargetMac Then
+            If Me.mURL <> Nil Then ReleaseObject(Me.mURL)
+        #End If
+        Me.mURL = Nil
+    End Sub
+    Public Sub Destructor()
+        Me.Close()
+    End Sub
+End Class

@@ -41,5 +41,4 @@ Native operations require macOS 11.2 or newer. BookmarksSupported returns false 
 
 See the [complete usage example](getting-started.md) and the [package overview](index.md).
 
-
 [Full typed API: properties, parameters, defaults, and returns](typed-api.md)

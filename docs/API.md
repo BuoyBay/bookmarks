@@ -25,9 +25,4 @@ option requests reduced access; callers cannot use it to expand an existing gran
 Errors include native NSError descriptions; missing/moved-unresolvable resources
 and corrupt bytes throw. Windows/Linux report unsupported and operations throw.
 
-The native test round-trips and refreshes a Unicode/spaced temporary fixture,
-checks corrupt data rejection, prevents pretending a plain bookmark grants scope,
-and verifies idempotent close. Entitled/sandboxed security-scope grants and stale
-resolution following user moves are **not** runtime-tested here.
-
 Apple API: [NSURL bookmark data](https://developer.apple.com/documentation/foundation/nsurl/bookmarkdata(options:includingresourcevaluesforkeys:relativeto:)).

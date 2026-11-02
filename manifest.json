@@ -2,7 +2,7 @@
   "schema": 1,
   "name": "bookmarks",
   "version": "0.1.0",
-  "description": "Native macOS Bookmarks integration for Buoy",
+  "description": "Create and resolve macOS file bookmarks",
   "platforms": [
     "arm64-apple-macos",
     "x86_64-apple-macos",

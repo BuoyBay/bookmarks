@@ -1,4 +1,4 @@
-# Create and resolve macOS file bookmarks
+# macOS file bookmarks
 
 Persist native NSURL bookmark bytes instead of assuming a saved path stays valid.
 `Import bookmarks`. macOS 11.2+ is required by the resolution options used here.
